@@ -1,10 +1,11 @@
 def call(Closure body) {
 
-    // Collect inputs from Jenkinsfile
     def config = [:]
     body.resolveStrategy = Closure.DELEGATE_FIRST
     body.delegate = config
     body()
+
+    def cfg = [:]   // ✅ DECLARED EARLY (IMPORTANT)
 
     pipeline {
         agent any
@@ -15,15 +16,14 @@ def call(Closure body) {
                 steps {
                     script {
                         cfg = readYaml file: config.configFile
-                        echo "Loaded config for ENV: ${cfg.ENVIRONMENT}"
+                        echo "Loaded configuration for ${cfg.ENVIRONMENT}"
                     }
                 }
             }
 
             stage('Clone') {
                 steps {
-                    echo "Cloning repository..."
-                    checkout scm
+                    echo "Repository already checked out by Jenkins"
                 }
             }
 
@@ -33,7 +33,7 @@ def call(Closure body) {
                 }
                 steps {
                     input message: "Approve deployment to ${cfg.ENVIRONMENT}?",
-                          ok: "Proceed"
+                          ok: "Deploy"
                 }
             }
 
@@ -42,8 +42,7 @@ def call(Closure body) {
                     script {
                         sh """
                         ansible-playbook ${cfg.ANSIBLE.PLAYBOOK} \
-                          -i ${cfg.ANSIBLE.INVENTORY} \
-                          --extra-vars '${cfg.ANSIBLE.EXTRA_VARS}'
+                        -i ${cfg.ANSIBLE.INVENTORY}
                         """
                     }
                 }
@@ -52,17 +51,26 @@ def call(Closure body) {
 
         post {
             success {
-                slackSend(
-                    channel: cfg.SLACK_CHANNEL_NAME,
-                    message: "✅ SUCCESS: ${cfg.ACTION_MESSAGE}"
-                )
+                script {
+                    if (cfg?.SLACK_CHANNEL_NAME) {
+                        slackSend(
+                            channel: cfg.SLACK_CHANNEL_NAME,
+                            message: "✅ SUCCESS: ${cfg.ACTION_MESSAGE}"
+                        )
+                    }
+                }
             }
             failure {
-                slackSend(
-                    channel: cfg.SLACK_CHANNEL_NAME,
-                    message: "❌ FAILED: ${cfg.ACTION_MESSAGE}"
-                )
+                script {
+                    if (cfg?.SLACK_CHANNEL_NAME) {
+                        slackSend(
+                            channel: cfg.SLACK_CHANNEL_NAME,
+                            message: "❌ FAILED: ${cfg.ACTION_MESSAGE}"
+                        )
+                    }
+                }
             }
         }
     }
 }
+
