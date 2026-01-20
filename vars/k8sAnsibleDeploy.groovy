@@ -1,76 +1,63 @@
-def call(Closure body) {
+def call(Map cfg) {
+    node {
+        try {
+            // -----------------------------
+            // Clone Ansible Repo
+            // -----------------------------
+            stage("Clone Ansible Repo") {
+                echo "Cloning Ansible repo from ${cfg.ANSIBLE_REPO}..."
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'ansible']],
+                    userRemoteConfigs: [[url: cfg.ANSIBLE_REPO]]])
+            }
 
-    def config = [:]
-    body.resolveStrategy = Closure.DELEGATE_FIRST
-    body.delegate = config
-    body()
-
-    def cfg = [:]   // ✅ DECLARED EARLY (IMPORTANT)
-
-    pipeline {
-        agent any
-
-        stages {
-
-            stage('Load Configuration') {
-                steps {
-                    script {
-                        cfg = readYaml file: config.configFile
-                        echo "Loaded configuration for ${cfg.ENVIRONMENT}"
-                    }
+            // -----------------------------
+            // User Approval
+            // -----------------------------
+            stage("User Approval") {
+                if(cfg.KEEP_APPROVAL_STAGE) {
+                    input message: "Approve deployment to ${cfg.ENVIRONMENT}?", ok: "Deploy"
+                } else {
+                    echo "Approval stage skipped"
                 }
             }
 
-            stage('Clone') {
-                steps {
-                    echo "Repository already checked out by Jenkins"
-                }
+            // -----------------------------
+            // Run Ansible Playbook
+            // -----------------------------
+            stage("Ansible Playbook Execution") {
+                sh """
+                ansible-playbook ansible/${cfg.ANSIBLE.PLAYBOOK} \
+                                 -i ansible/${cfg.ANSIBLE.INVENTORY}
+                """
             }
 
-            stage('User Approval') {
-                when {
-                    expression { cfg.KEEP_APPROVAL_STAGE == true }
-                }
-                steps {
-                    input message: "Approve deployment to ${cfg.ENVIRONMENT}?",
-                          ok: "Deploy"
-                }
+            // -----------------------------
+            // Slack Notification
+            // -----------------------------
+            stage("Notification") {
+                slackSend(
+                    channel: cfg.SLACK_CHANNEL_NAME,
+                    message: cfg.ACTION_MESSAGE,
+                    botUser: true,
+                    tokenCredentialId: "slack-token" // Replace with your Jenkins Slack credential ID
+                )
             }
 
-            stage('Ansible Playbook Execution') {
-                steps {
-                    script {
-                        sh """
-                        ansible-playbook ${cfg.ANSIBLE.PLAYBOOK} \
-                        -i ${cfg.ANSIBLE.INVENTORY}
-                        """
-                    }
-                }
-            }
-        }
-
-        post {
-            success {
-                script {
-                    if (cfg?.SLACK_CHANNEL_NAME) {
-                        slackSend(
-                            channel: cfg.SLACK_CHANNEL_NAME,
-                            message: "✅ SUCCESS: ${cfg.ACTION_MESSAGE}"
-                        )
-                    }
-                }
-            }
-            failure {
-                script {
-                    if (cfg?.SLACK_CHANNEL_NAME) {
-                        slackSend(
-                            channel: cfg.SLACK_CHANNEL_NAME,
-                            message: "❌ FAILED: ${cfg.ACTION_MESSAGE}"
-                        )
-                    }
-                }
-            }
+        } catch (err) {
+            // Send Slack notification on failure
+            echo "Deployment failed: ${err}"
+            slackSend(
+                channel: cfg.SLACK_CHANNEL_NAME,
+                message: "Deployment FAILED for ${cfg.ENVIRONMENT}!\nError: ${err}",
+                botUser: true,
+                tokenCredentialId: "slack-token"
+            )
+            error("Pipeline failed!")
         }
     }
 }
+
 
